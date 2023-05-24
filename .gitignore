@@ -8,5 +8,5 @@ application.windows32
 application.windows64
 application.macosx
 out
-.wav
-.mp3
+wav
+mp3
