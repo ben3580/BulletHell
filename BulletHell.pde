@@ -1,29 +1,30 @@
 import processing.sound.*;
+import bpm.library.*;
+import java.util.PriorityQueue;
+
 SoundFile file;
+BeatsPerMinute bpm;
 
 boolean[] movement; // up, down, left, right / w, s, a, d
 Player player;
-ArrayList<Bullet> bullets;
+AttackScheduler scheduler;
+PriorityQueue<BulletWrapper> queuedBullets;
+ArrayList<Bullet> activeBullets;
 ArrayList<PreviewLine> lines;
-ArrayList<float[]> randomWaveNums;
-ArrayList<float[]> focusWaveNums;
 int timeAtHit;
 int timeAtDash;
 int score;
 int highScore;
-int nextRandomWave;
 int nextFocusWave;
-int nextRandomWave2;
-int nextFocusWave2;
 boolean menu;
-Explosion explosion;
 ArrayList<RandomText> randomText;
 
 int timeStart;
 int timeNow;
 
-int musicTest;
-int musicNext;
+int beat;
+int totalBeat;
+boolean beatFlag;
 boolean musicPlaying;
 
 void setup(){
@@ -32,12 +33,12 @@ void setup(){
   
   movement = new boolean[4];
   player = new Player(width/2, height/2);
+  scheduler = new AttackScheduler();
   timeAtHit = 0;
   timeAtDash = 0;
-  bullets = new ArrayList<>();
+  queuedBullets = new PriorityQueue<>();
+  activeBullets = new ArrayList<>();
   lines = new ArrayList<>();
-  randomWaveNums = new ArrayList<>();
-  focusWaveNums = new ArrayList<>();
   menu = true;
   score = 0;
   highScore = 0;
@@ -46,12 +47,16 @@ void setup(){
   timeStart = 0;
   timeNow = 0;
   
-  musicTest = 0;
-  musicNext = 0;
+  beat = 0;
+  totalBeat = 0;
+  beatFlag = true;
   musicPlaying = false;
   
   file = new SoundFile(this, "dog_nonstop_mix.wav");
   file.amp(0.3);
+  
+  bpm = new BeatsPerMinute(this, 380);
+  bpm.showInfo = false;
 }
 
 void draw(){
@@ -62,71 +67,42 @@ void draw(){
   text("FPS:", width-70, 30);
   text(int(frameRate), width-20, 30);
   if(menu){
-    textAlign(CENTER);
-    fill(255);
-    textSize(40);
-    text("Score", width/2, 250);
-    text(score, width/2, 300);
-    text("High Score", width/2, 350);
-    text(highScore, width/2, 400);
-    textSize(40);
-    text("Instructions", width/2, 500);
-    stroke(255);
-    strokeWeight(2);
-    line(width/2 - 100, 515, width/2 + 100, 515);
-    textSize(30);
-    text("WASD / arrow keys to move", width/2, 570);
-    text("Spacebar / x to dash. Dash gives you invulnerability. Recharges in 3 seconds", width/2, 620);
-    text("You gain a rechargable shield if you don't get hit for 30 seconds", width/2, 670);
-    
-    textSize(40);
-    text("Music", width/2, 750);
-    line(width/2 - 40, 765, width/2 + 40, 765);
-    textSize(30);
-    text("DM Dokuro - Devourer of Gods Nonstop Mix", width/2, 820);
-    text("Press Enter / Return to play", width/2, height - 100);
-    // Title
-    fill(#009FFF);
-    textSize(80);
-    int temp = timeNow;
-    translate(width/2, 120);
-    rotate(sin(temp/1000.0)/5.0);
-    text("Ben's Bullet Hell", 0, 0);
-    rotate(-sin(temp/1000.0)/5.0);
-    translate(-width/2, -120);
-    
-    if(random(0, 1) > 0.997){
-      randomText.add(new RandomText());
-    }
-    for(int i = randomText.size()-1; i >= 0; i--){
-      RandomText rt = randomText.get(i);
-      rt.update();
-      rt.display();
-      if(rt.timer >= 3000){
-        randomText.remove(i);
-      }
-    }
+    displayMenu();
   }
   else{
-    if(timeNow >= nextRandomWave){
-      addRandomLines();
+    
+    beatFlag = bpm.every_once[1];
+    if(beatFlag){
+      beat++;
+      totalBeat++;
+      beatFlag = true;
+      if(beat > 8){
+        beat = 1;
+      }
+    }
+    if(beatFlag){
+      Attack atk = scheduler.query(totalBeat);
+      if(atk != null){
+        PreviewLine[] tempLines = atk.generateLines();
+        for(int i = 0; i < tempLines.length; i++){
+          lines.add(tempLines[i]);
+        }
+        BulletWrapper[] tempBullets = atk.generateBullets(timeNow);
+        for(int i = 0; i < tempBullets.length; i++){
+          queuedBullets.add(tempBullets[i]);
+        }
+      }
     }
     
-    if(timeNow >= nextRandomWave2){
-      addRandomBullets();
-    }
-    
-    if(timeNow >= nextFocusWave){
-      addFocusLines();
-    }
-    
-    if(timeNow >= nextFocusWave2){
-      addFocusBullets();
-    }
-    
-    if(timeNow >= musicNext){
-      musicNext += 317;
-      musicTest += 1;
+    boolean flag = true;
+    while(flag && queuedBullets.size() > 0){
+      BulletWrapper tempBullet = queuedBullets.peek();
+      if(timeNow >= tempBullet.time){
+        activeBullets.add(queuedBullets.poll().bullet);
+      }
+      else{
+        flag = false;
+      }
     }
     
     float direction = calcDirection();
@@ -137,7 +113,7 @@ void draw(){
     
     player.update(direction, isMoving);
     player.display();
-    boolean collision = player.checkCollision(bullets);
+    boolean collision = player.checkCollision(activeBullets);
     if(collision){
       timeAtHit = timeNow;
       if(player.shield){
@@ -145,7 +121,6 @@ void draw(){
       }
       else{
         player.lives -= 1;
-        explosion = new Explosion(20 + player.lives * 30, 30);
         if(player.lives <= 0){
           player.lives = 5;
           if(score >= highScore){
@@ -154,16 +129,16 @@ void draw(){
           menu = true;
           file.stop();
           musicPlaying = false;
-          musicTest = 0;
-          bullets.clear();
+          activeBullets.clear();
+          queuedBullets.clear();
           lines.clear();
+          bpm = new BeatsPerMinute(this, 193);
+          beat = 0;
+          totalBeat = 0;
         }
       }
     }
     if(player.invulnerable){
-      if(timeNow - timeAtHit >= 500){
-        explosion = null;
-      }
       if(timeNow - timeAtHit >= 2000){
         player.invulnerable = false;
       }
@@ -192,10 +167,6 @@ void draw(){
       noStroke();
       fill(230, 30, 30);
       rect(-10 + i * 30, 20, 20, 20);
-    }
-    
-    if(explosion != null){
-      explosion.display();
     }
     
     // Set up variables for the progress bar
@@ -235,15 +206,7 @@ void draw(){
       line(player.x - 50, player.y - 40, player.x - 50 + progress * 100, player.y - 40);
     }
     
-    //for(int i = 0; i < 4; i++){
-    //  if(musicTest%4 == i){
-    //    fill(255);
-    //  }
-    //  else{
-    //    fill(100);
-    //  }
-    //  rect(width - 150 + i * 30, height - 40, 20, 20);
-    //}
+    bpm.run();
   }
 }
 
@@ -252,11 +215,7 @@ void keyPressed(){
     if(key == ENTER || key == RETURN){
       menu = false;
       timeStart = millis();
-      nextRandomWave = timeNow + 1890;
-      nextRandomWave2 = timeNow + 2390;
       nextFocusWave = timeNow + 1260;
-      nextFocusWave2 = timeNow + 1760;
-      musicNext = timeNow + 315;
       if(!musicPlaying){
         file.play();
         musicPlaying = true;
@@ -366,138 +325,6 @@ float calcDirection(){
   return direction;
 }
 
-void addRandomLines(){
-  nextRandomWave += int(1260 * 2 * floor(random(1, 3)));
-  randomWaveNums.clear();
-  float x;
-  float y;
-  float direction;
-  int amount = score/50 + 5;
-  for(int i = 0; i < amount; i++){
-    int side = floor(random(4)); // up, right, down, left
-    if(side == 0){
-      x = random(-100, width + 100);
-      y = -25;
-      direction = randomGaussian() * HALF_PI + HALF_PI;
-    }
-    else if(side == 2){
-      x = random(-100, width + 100);
-      y = height + 25;
-      direction = randomGaussian() * HALF_PI + 1.5 * PI;
-    }
-    else if(side == 1){
-      x = width + 25;
-      y = random(-100, height + 100);
-      direction = randomGaussian() * HALF_PI + PI;
-    }
-    else{
-      x = -25;
-      y = random(-100, height + 100);
-      direction = randomGaussian() * QUARTER_PI + QUARTER_PI;
-      if(random(1) < 0.5){
-        direction = -direction;
-      }
-    }
-    float[] tuple = new float[3];
-    tuple[0] = x;
-    tuple[1] = y;
-    tuple[2] = direction;
-    randomWaveNums.add(tuple);
-    lines.add(new PreviewLine(x, y, direction));
-  }
-}
-
-void addRandomBullets(){
-  nextRandomWave2 = nextRandomWave + 500;
-  float speed = 5 + random(log(timeNow/1000));
-  for(float[] nums: randomWaveNums){
-    bullets.add(new Bullet(nums[0], nums[1], nums[2], speed));
-  }
-}
-
-void addFocusLines(){
-  if(timeNow - timeStart < 65500){
-    nextFocusWave += 1260;
-  }
-  else{
-    nextFocusWave += 630;
-  }
-  focusWaveNums.clear();
-  float x;
-  float y;
-  float direction;
-  int side = floor(random(0, 4)); // up, right, down, left
-  if(side == 0){
-    x = random(100, width - 100);
-    y = -25;
-  }
-  else if(side == 2){
-    x = random(100, width - 100);
-    y = height + 25;
-  }
-  else if(side == 1){
-    x = width + 25;
-    y = random(100, height - 100);
-  }
-  else{
-    x = -25;
-    y = random(100, height - 100);
-  }
-  int numLines = 0;
-  int spacing = 0;
-  if(score < 126){
-    numLines = 5;
-    spacing = 150;
-  }
-  else if(score < 177){
-    numLines = 7;
-    spacing = 120;
-  }
-  else if(score < 227){
-    numLines = 9;
-    spacing = 100;
-  }
-  else if(score < 288){
-    numLines = 11;
-    spacing = 90;
-  }
-  else{
-    numLines = 21;
-    spacing = 60;
-  }
-  for(int i = 0; i < numLines; i++){
-    float tempx = x;
-    float tempy = y;
-    if(side == 0 || side == 2){
-      tempx = x + (i - numLines/2) * spacing;
-    }
-    else{
-      tempy = y + (i - numLines/2) * spacing;
-    }
-    direction = atan2(player.y - tempy, player.x - tempx);
-    
-    float[] tuple = new float[3];
-    tuple[0] = tempx;
-    tuple[1] = tempy;
-    tuple[2] = direction;
-    focusWaveNums.add(tuple);
-    lines.add(new PreviewLine(tempx, tempy, direction));
-  }
-}
-
-void addFocusBullets(){
-  if(timeNow - timeStart < 65500){
-    nextFocusWave2 += 1260;
-  }
-  else{
-    nextFocusWave2 += 630;
-  }
-  float speed = 10;
-  for(float[] nums: focusWaveNums){
-    bullets.add(new Bullet(nums[0], nums[1], nums[2], speed));
-  }
-}
-
 void displayStuff(){
   for(int i = lines.size() - 1; i >= 0; i--){
     PreviewLine thisLine = lines.get(i);
@@ -508,12 +335,47 @@ void displayStuff(){
     }
   }
   
-  for(int i = bullets.size() - 1; i >= 0; i--){
-    Bullet bullet = bullets.get(i);
+  for(int i = activeBullets.size() - 1; i >= 0; i--){
+    Bullet bullet = activeBullets.get(i);
     bullet.display();
     bullet.update();
     if(bullet.timer >= 400){
-      bullets.remove(i);
+      activeBullets.remove(i);
     }
   }
+}
+
+void displayMenu(){
+  textAlign(CENTER);
+  fill(255);
+  textSize(40);
+  text("Score", width/2, 250);
+  text(score, width/2, 300);
+  text("High Score", width/2, 350);
+  text(highScore, width/2, 400);
+  textSize(40);
+  text("Instructions", width/2, 500);
+  stroke(255);
+  strokeWeight(2);
+  line(width/2 - 100, 515, width/2 + 100, 515);
+  textSize(30);
+  text("WASD / arrow keys to move", width/2, 570);
+  text("Spacebar / x to dash. Dash gives you invulnerability. Recharges in 3 seconds", width/2, 620);
+  text("You gain a rechargable shield if you don't get hit for 30 seconds", width/2, 670);
+  
+  textSize(40);
+  text("Music", width/2, 750);
+  line(width/2 - 40, 765, width/2 + 40, 765);
+  textSize(30);
+  text("DM Dokuro - Devourer of Gods Nonstop Mix", width/2, 820);
+  text("Press Enter / Return to play", width/2, height - 100);
+  // Title
+  fill(#009FFF);
+  textSize(80);
+  int temp = timeNow;
+  translate(width/2, 120);
+  rotate(sin(temp/1000.0)/5.0);
+  text("Ben's Bullet Hell", 0, 0);
+  rotate(-sin(temp/1000.0)/5.0);
+  translate(-width/2, -120);
 }

@@ -11,8 +11,8 @@ class PreviewLine{
     timer = 0;
     x1 = initX;
     y1 = initY;
-    x2 = initX + (2500 * cos(initDir));
-    y2 = initY + (2500 * sin(initDir));
+    x2 = initX + (3000 * cos(initDir));
+    y2 = initY + (3000 * sin(initDir));
   }
   
   void display(){
